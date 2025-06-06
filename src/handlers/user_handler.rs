@@ -28,32 +28,40 @@ pub fn handle_connection(mut stream: TcpStream) {
 }
 
 fn handle_post(request: &str) -> (&'static str, String) {
-    if let (Ok(user), Ok(mut client)) = (parse_user_body(request), get_db_client()) {
-        let _ = client.execute(
-            "INSERT INTO users (name, email) VALUES ($1, $2)",
-            &[&user.name, &user.email],
-        );
-        (OK, "User created".to_string())
-    } else {
-        (ERR, "Failed to create user".to_string())
+    match (parse_user_body(request), get_db_client()) {
+        (Ok(user), Ok(mut client)) => {
+            match client.execute(
+                "INSERT INTO users (name, email) VALUES ($1, $2)",
+                &[&user.name, &user.email],
+            ) {
+                Ok(_) => (OK, "User created".to_string()),
+                Err(_) => (ERR, "Failed to insert user".to_string()),
+            }
+        }
+        _ => (ERR, "Failed to parse or connect".to_string()),
     }
 }
 
 fn handle_get(request: &str) -> (&'static str, String) {
-    if let (Ok(id), Ok(mut client)) = (get_id_from_request(request), get_db_client()) {
-        if let Ok(rows) = client.query_one("SELECT id, name, email FROM users WHERE id = $1", &[&id]) {
-            if let Some(row) = rows.get(0) {
-                let user = User {
-                    id: Some(row.get(0)),
-                    name: row.get(1),
-                    email: row.get(2),
-                };
-                return (OK, serde_json::to_string(&user).unwrap());
+    match (get_id_from_request(request), get_db_client()) {
+        (Ok(id), Ok(mut client)) => {
+            match client.query_one("SELECT id, name, email FROM users WHERE id = $1", &[&id]) {
+                Ok(row) => {
+                    let user = User {
+                        id: Some(row.get(0)),
+                        name: row.get(1),
+                        email: row.get(2),
+                    };
+                    match serde_json::to_string(&user) {
+                        Ok(json) => (OK, json),
+                        Err(_) => (ERR, "Serialization error".to_string()),
+                    }
+                }
+                Err(_) => (NOT_FOUND, "User not found".to_string()),
             }
-            return (NOT_FOUND, "User not found".to_string());
         }
+        _ => (ERR, "Error fetching user".to_string()),
     }
-    (ERR, "Error fetching user".to_string())
 }
 
 fn handle_get_all() -> (&'static str, String) {
@@ -67,33 +75,50 @@ fn handle_get_all() -> (&'static str, String) {
                     email: row.get(2),
                 })
                 .collect();
-            return (OK, serde_json::to_string(&users).unwrap());
+            return match serde_json::to_string(&users) {
+                Ok(json) => (OK, json),
+                Err(_) => (ERR, "Serialization error".to_string()),
+            };
         }
     }
     (ERR, "Error listing users".to_string())
 }
 
 fn handle_put(request: &str) -> (&'static str, String) {
-    if let (Ok(id), Ok(user), Ok(mut client)) =
-        (get_id_from_request(request), parse_user_body(request), get_db_client())
-    {
-        let _ = client.execute(
-            "UPDATE users SET name = $1, email = $2 WHERE id = $3",
-            &[&user.name, &user.email, &id],
-        );
-        return (OK, "User updated".to_string());
+    match (get_id_from_request(request), parse_user_body(request), get_db_client()) {
+        (Ok(id), Ok(user), Ok(mut client)) => {
+            match client.execute(
+                "UPDATE users SET name = $1, email = $2 WHERE id = $3",
+                &[&user.name, &user.email, &id],
+            ) {
+                Ok(updated) => {
+                    if updated > 0 {
+                        (OK, "User updated".to_string())
+                    } else {
+                        (NOT_FOUND, "User not found".to_string())
+                    }
+                }
+                Err(_) => (ERR, "Failed to update".to_string()),
+            }
+        }
+        _ => (ERR, "Invalid input or connection error".to_string()),
     }
-    (ERR, "Error updating user".to_string())
 }
 
 fn handle_delete(request: &str) -> (&'static str, String) {
-    if let (Ok(id), Ok(mut client)) = (get_id_from_request(request), get_db_client()) {
-        if let Ok(count) = client.execute("DELETE FROM users WHERE id = $1", &[&id]) {
-            if count > 0 {
-                return (OK, "User deleted".to_string());
+    match (get_id_from_request(request), get_db_client()) {
+        (Ok(id), Ok(mut client)) => {
+            match client.execute("DELETE FROM users WHERE id = $1", &[&id]) {
+                Ok(count) => {
+                    if count > 0 {
+                        (OK, "User deleted".to_string())
+                    } else {
+                        (NOT_FOUND, "User not found".to_string())
+                    }
+                }
+                Err(_) => (ERR, "Failed to delete user".to_string()),
             }
-            return (NOT_FOUND, "User not found".to_string());
         }
+        _ => (ERR, "Invalid input or connection error".to_string()),
     }
-    (ERR, "Error deleting user".to_string())
 }
