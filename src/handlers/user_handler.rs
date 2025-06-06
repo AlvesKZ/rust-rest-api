@@ -41,7 +41,7 @@ fn handle_post(request: &str) -> (&'static str, String) {
 
 fn handle_get(request: &str) -> (&'static str, String) {
     if let (Ok(id), Ok(mut client)) = (get_id_from_request(request), get_db_client()) {
-        if let Ok(rows) = client.query("SELECT id, name, email FROM users WHERE id = $1", &[&id]) {
+        if let Ok(rows) = client.query_one("SELECT id, name, email FROM users WHERE id = $1", &[&id]) {
             if let Some(row) = rows.get(0) {
                 let user = User {
                     id: Some(row.get(0)),

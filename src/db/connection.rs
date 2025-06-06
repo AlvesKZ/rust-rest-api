@@ -1,14 +1,15 @@
 use postgres::{Client, NoTls, Error};
-
-const DB_URL: &str = env!("DATABASE_URL");
+use std::env;
 
 pub fn get_db_client() -> Result<Client, Error> {
-    Client::connect(DB_URL, NoTls)
+    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    Client::connect(&db_url, NoTls)
 }
+
 
 pub fn setup() -> Result<(), Error> {
     let mut client = get_db_client()?;
-    client.execute(
+    client.batch_execute(
         "CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             name VARCHAR NOT NULL,
