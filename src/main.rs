@@ -26,35 +26,7 @@ fn main() {
         return;
     }
 
-    fn handle_client(mut stream: TcpStream) {
-        let mut buffer = [0; 1024];
-        let mut request = String::new();
-
-        match stream.read(&mut buffer) {
-            Ok(size) => {
-                request = String::from_utf8_lossy(&buffer[..size]).to_string();
-                request.push_str(String::from_utf8_lossy(&buffer[..size]).as_ref());
-
-                let (status_line, content) = match &*request {
-                    r if request_width("POST /users") == handle_post_request(r),
-                    r if request_width("GET /users/") == handle_get_request(r),
-                    r if request_width("GET /users") == handle_get_all_request(r),
-                    r if request_width("POST /users") == handle_post_request(r),
-                    r if request_width("DELETE /users") == handle_delete_request(r),
-                    _ => (NOT_FOUND, "Not Found".to_string()),
-                };
-
-                stream
-                    .write_all(format!("{}{}", status_line, content).as_bytes())
-                    .unwrap();
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-            }
-        }
-    }
-
-    let listener = TcpListener::bind(format!("0.0.0.0:8080")).unwrap();
+    let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
     println!("Server running on port 8080");
 
     for stream in listener.incoming() {
@@ -66,6 +38,52 @@ fn main() {
                 println!("Error: {}", e);
             }
         }
+    }
+}
+
+fn handle_client(mut stream: TcpStream) {
+    let mut buffer = [0; 1024];
+    let mut request = String::new();
+
+    match stream.read(&mut buffer) {
+        Ok(size) => {
+            request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            request.push_str(String::from_utf8_lossy(&buffer[..size]).as_ref());
+
+            let (status_line, content) = match &*request {
+                r if request_with("POST /users") => handle_post_request(r),
+                r if request_with("GET /users/") => handle_get_request(r),
+                r if request_with("GET /users") => handle_get_all_request(r),
+                r if request_with("DELETE /users") => handle_delete_request(r),
+                _ => (NOT_FOUND, "Not Found".to_string()),
+            };
+
+            stream
+                .write_all(format!("{}{}", status_line, content).as_bytes())
+                .unwrap();
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+        }
+    }
+}
+
+fn handle_post_request(request: &str) -> (String, String) {
+    match (
+        get_user_request_body(&request),
+        Client::connect(DB_URL, NoTls),
+    ) {
+        (Ok(user), Ok(mut client)) => {
+            client
+                .execute(
+                    "INSERT INTO users (name, email) VALUES ($1, $2)",
+                    &[&user.name, &user.email],
+                )
+                .unwrap();
+
+            (OK_RESPONSE.to_string(), "User created".to_string())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
 }
 
