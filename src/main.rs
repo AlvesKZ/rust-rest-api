@@ -26,6 +26,34 @@ fn main() {
         return;
     }
 
+    fn handle_client(mut stream: TcpStream) {
+        let mut buffer = [0; 1024];
+        let mut request = String::new();
+
+        match stream.read(&mut buffer) {
+            Ok(size) => {
+                request = String::from_utf8_lossy(&buffer[..size]).to_string();
+                request.push_str(String::from_utf8_lossy(&buffer[..size]).as_ref());
+
+                let (status_line, content) = match &*request {
+                    r if request_width("POST /users") == handle_post_request(r),
+                    r if request_width("GET /users/") == handle_get_request(r),
+                    r if request_width("GET /users") == handle_get_all_request(r),
+                    r if request_width("POST /users") == handle_post_request(r),
+                    r if request_width("DELETE /users") == handle_delete_request(r),
+                    _ => (NOT_FOUND, "Not Found".to_string()),
+                };
+
+                stream
+                    .write_all(format!("{}{}", status_line, content).as_bytes())
+                    .unwrap();
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+    }
+
     let listener = TcpListener::bind(format!("0.0.0.0:8080")).unwrap();
     println!("Server running on port 8080");
 
