@@ -1,5 +1,4 @@
-use postgres::Error as PostgresError;
-use postgres::{Client, NoTls};
+use postgres::{Client, NoTls, Error as PostgresError};
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -35,7 +34,7 @@ fn main() {
                 handle_client(stream);
             }
             Err(e) => {
-                println!("Error: {}", e);
+                println!("Connection error: {}", e);
             }
         }
     }
@@ -48,38 +47,40 @@ fn handle_client(mut stream: TcpStream) {
     match stream.read(&mut buffer) {
         Ok(size) => {
             request = String::from_utf8_lossy(&buffer[..size]).to_string();
-            request.push_str(String::from_utf8_lossy(&buffer[..size]).as_ref());
 
-            let (status_line, content) = match &*request {
-                r if request_with("POST /users") => handle_post_request(r),
-                r if request_with("GET /users/") => handle_get_request(r),
-                r if request_with("GET /users") => handle_get_all_request(r),
-                r if request_with("DELETE /users") => handle_delete_request(r),
-                _ => (NOT_FOUND, "Not Found".to_string()),
+            let (status_line, content) = if request.starts_with("POST /users") {
+                handle_post_request(&request)
+            } else if request.starts_with("GET /users/") {
+                handle_get_request(&request)
+            } else if request.starts_with("GET /users") {
+                handle_get_all_request(&request)
+            } else if request.starts_with("PUT /users") {
+                handle_put_request(&request)
+            } else if request.starts_with("DELETE /users") {
+                handle_delete_request(&request)
+            } else {
+                (NOT_FOUND.to_string(), "Not Found".to_string())
             };
 
-            stream
-                .write_all(format!("{}{}", status_line, content).as_bytes())
-                .unwrap();
+            if let Err(e) = stream.write_all(format!("{}{}", status_line, content).as_bytes()) {
+                eprintln!("Write error: {}", e);
+            }
         }
         Err(e) => {
-            println!("Error: {}", e);
+            println!("Read error: {}", e);
         }
     }
 }
 
 fn handle_post_request(request: &str) -> (String, String) {
-    match (
-        get_user_request_body(&request),
-        Client::connect(DB_URL, NoTls),
-    ) {
+    match (get_user_request_body(request), Client::connect(DB_URL, NoTls)) {
         (Ok(user), Ok(mut client)) => {
-            client
-                .execute(
-                    "INSERT INTO users (name, email) VALUES ($1, $2)",
-                    &[&user.name, &user.email],
-                )
-                .unwrap();
+            if let Err(_) = client.execute(
+                "INSERT INTO users (name, email) VALUES ($1, $2)",
+                &[&user.name, &user.email],
+            ) {
+                return (INTERNAL_SERVER_ERROR.to_string(), "Insert failed".to_string());
+            }
 
             (OK_RESPONSE.to_string(), "User created".to_string())
         }
@@ -87,38 +88,83 @@ fn handle_post_request(request: &str) -> (String, String) {
     }
 }
 
-handle_get_request(request: &str) -> (String, String) {
-   match (get_id(request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
-       (Ok(id), Ok(mut client)) => {
-           match client.query("SELECT * FROM users WHERE id = $1", &[&id]) {
-               Ok(row) => {
-                   let user: User = User {
-                       id: Some(row.get(0)),
-                       name: row.get(1),
-                       email: row.get(2),
-                   };
-                   (OK_RESPONSE.to_string(), serde_json::to_string(&user).unwrap())
-               }
-               Err(_) => (NOT_FOUND.to_string(), "User not found".to_string()),
-           }
-       }
-       _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
-   }
+fn handle_get_request(request: &str) -> (String, String) {
+    match (get_id(request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) => {
+            match client.query("SELECT id, name, email FROM users WHERE id = $1", &[&id]) {
+                Ok(rows) if !rows.is_empty() => {
+                    let row = &rows[0];
+                    let user = User {
+                        id: Some(row.get(0)),
+                        name: row.get(1),
+                        email: row.get(2),
+                    };
+                    (OK_RESPONSE.to_string(), serde_json::to_string(&user).unwrap())
+                }
+                _ => (NOT_FOUND.to_string(), "User not found".to_string()),
+            }
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
+    }
 }
 
-fn handle_get_all_request(request: &str) -> (String, String) {
+fn handle_get_all_request(_request: &str) -> (String, String) {
     match Client::connect(DB_URL, NoTls) {
         Ok(mut client) => {
-            let mut users = Vec::new();
-            
-            for row in client.query("SELECT * FROM users", &[]).unwrap() {
-                users.push(User {
-                    id: row.get(0),
-                    name: row.get(1),
-                    email: row.get(2),
-                });
+            let query_result = client.query("SELECT id, name, email FROM users", &[]);
+
+            match query_result {
+                Ok(rows) => {
+                    let users: Vec<User> = rows
+                        .into_iter()
+                        .map(|row| User {
+                            id: Some(row.get(0)),
+                            name: row.get(1),
+                            email: row.get(2),
+                        })
+                        .collect();
+
+                    (OK_RESPONSE.to_string(), serde_json::to_string(&users).unwrap())
+                }
+                Err(_) => (INTERNAL_SERVER_ERROR.to_string(), "Query error".to_string()),
             }
-            (OK_RESPONSE.to_string(), serde_json::to_string(&users).unwrap())
+        }
+        Err(_) => (INTERNAL_SERVER_ERROR.to_string(), "Connection error".to_string()),
+    }
+}
+
+fn handle_put_request(request: &str) -> (String, String) {
+    match (
+        get_id(request).parse::<i32>(),
+        get_user_request_body(request),
+        Client::connect(DB_URL, NoTls),
+    ) {
+        (Ok(id), Ok(user), Ok(mut client)) => {
+            if let Err(_) = client.execute(
+                "UPDATE users SET name = $1, email = $2 WHERE id = $3",
+                &[&user.name, &user.email, &id],
+            ) {
+                return (INTERNAL_SERVER_ERROR.to_string(), "Update failed".to_string());
+            }
+
+            (OK_RESPONSE.to_string(), "User updated".to_string())
+        }
+        _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
+    }
+}
+
+fn handle_delete_request(request: &str) -> (String, String) {
+    match (get_id(request).parse::<i32>(), Client::connect(DB_URL, NoTls)) {
+        (Ok(id), Ok(mut client)) => {
+            match client.execute("DELETE FROM users WHERE id = $1", &[&id]) {
+                Ok(rows_affected) => {
+                    if rows_affected == 0 {
+                        return (NOT_FOUND.to_string(), "User not found".to_string());
+                    }
+                    (OK_RESPONSE.to_string(), "User deleted".to_string())
+                }
+                Err(_) => (INTERNAL_SERVER_ERROR.to_string(), "Delete failed".to_string()),
+            }
         }
         _ => (INTERNAL_SERVER_ERROR.to_string(), "Error".to_string()),
     }
